@@ -1,0 +1,52 @@
+// Chargeback report: the deliverable. Every dollar of a $107,487 bill
+// assigned to a business owner, with no unallocated remainder.
+//
+// Direct = resources the team owns (tagged, or inferred from resource group)
+// Allocated = their share of shared infrastructure, per-resource drivers
+//
+// Result:
+//   Storefront    $31,477 direct + $22,428 allocated = $53,905  (50.2%)
+//   Merchandising $28,594 direct + $14,161 allocated = $42,755  (39.8%)
+//   Corporate      $2,925 direct +  $7,902 allocated = $10,827  (10.1%)
+//
+// 73% of Corporate's cost is shared infrastructure it doesn't own.
+// A tags-only view showed that team as nearly free.
+
+let SharedCosts = AzureBilling_CL
+    | where ResourceGroup == "rg-shared-services"
+    | extend DriverKey = case(
+        ResourceName == "aks-shared-platform", "aks_vcpu_hours",
+        ResourceName == "log-shared-workspace", "log_ingest_gb",
+        ResourceName == "bandwidth-egress-shared", "egress_gb",
+        ResourceName == "afw-shared-egress" and MeterName == "Data Processed", "egress_gb",
+        "headcount")
+    | summarize SharedCost = sum(CostInBillingCurrency) by BillingPeriod, DriverKey;
+let DriverTotals = AllocationDrivers_CL
+    | summarize MonthTotal = sum(Value) by BillingPeriod, Driver;
+let Allocated = AllocationDrivers_CL
+    | summarize DriverValue = sum(Value) by BillingPeriod, Driver, CostCenter
+    | join kind=inner DriverTotals on BillingPeriod, Driver
+    | extend Share = DriverValue / MonthTotal
+    | join kind=inner (SharedCosts) on $left.BillingPeriod == $right.BillingPeriod, $left.Driver == $right.DriverKey
+    | summarize AllocatedCost = sum(Share * SharedCost) by CostCenter;
+let Direct = AzureBilling_CL
+    | where ResourceGroup != "rg-shared-services"
+    | extend CostCenterTag = tostring(parse_json(Tags).cost_center)
+    | extend CostCenter = case(
+        isnotempty(CostCenterTag), CostCenterTag,
+        ResourceGroup startswith "rg-storefront", "Storefront",
+        ResourceGroup startswith "rg-data-platform", "Merchandising",
+        ResourceGroup == "rg-corp-it", "Corporate",
+        "UNRESOLVED")
+    | summarize DirectCost = sum(CostInBillingCurrency) by CostCenter;
+Direct
+| join kind=inner Allocated on CostCenter
+| extend TotalCost = DirectCost + AllocatedCost
+| extend PctOfTotal = round(100.0 * TotalCost / toscalar(
+    AzureBilling_CL | summarize sum(CostInBillingCurrency)), 1)
+| project CostCenter,
+          Direct = round(DirectCost, 2),
+          Allocated = round(AllocatedCost, 2),
+          Total = round(TotalCost, 2),
+          PctOfTotal
+| order by Total desc
