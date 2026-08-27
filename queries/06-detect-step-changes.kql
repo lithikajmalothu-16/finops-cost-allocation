@@ -1,0 +1,30 @@
+// Detector 1 of 4: step changes — sudden jumps in cost.
+// Catches resize-and-forget and incidents.
+//
+// Design choices, each suppressing a specific false positive:
+//   Weekly not daily  — nonprod VMs run at 14% on weekends; a daily
+//                       comparison would flag every Monday on every dev box.
+//   serialize + prev()— KQL has no window functions. The ResourceName guard
+//                       stops comparing across resource boundaries.
+//   PrevWeek > 5      — $0.02 -> $0.20 is +900% and worth nothing. Percentage
+//                       change needs an absolute floor underneath it.
+//
+// Result at threshold 75%: 4 rows — 2 true positives (dev VM resize 2026-03-12,
+// logging incident 2026-04-06), 1 duplicate (same incident, partial week then
+// full week), 1 false positive (holiday freeze ending, dev activity resuming).
+// 50% precision. Raising to 150% gives 100% precision but goes blind to any
+// real problem growing slower than that. Neither threshold is "right".
+
+AzureBilling_CL
+| extend D = todatetime(Date)
+| extend Week = startofweek(D)
+| where Week > datetime(2025-09-07) and Week < datetime(2026-08-16)
+| summarize WeeklyCost = sum(CostInBillingCurrency) by ResourceName, Week
+| order by ResourceName asc, Week asc
+| serialize
+| extend PrevWeek = iff(prev(ResourceName) == ResourceName, prev(WeeklyCost), real(null))
+| where isnotnull(PrevWeek) and PrevWeek > 5
+| extend PctChange = round(100.0 * (WeeklyCost - PrevWeek) / PrevWeek, 1)
+| where PctChange > 75
+| project Week, ResourceName, PrevWeek = round(PrevWeek, 2), WeeklyCost = round(WeeklyCost, 2), PctChange
+| order by PctChange desc
