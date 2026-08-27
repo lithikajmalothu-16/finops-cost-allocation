@@ -1,0 +1,22 @@
+// Naive allocation: split ALL shared cost by AKS vCPU-hours.
+// Kept deliberately — this is the wrong answer. The gap between this and 04
+// is the argument for why allocation methodology matters.
+// Flaw: charges fixed costs (firewall deployment ~$10.9k/yr, VPN gateway,
+// container registry) by cluster usage, which doesn't cause them.
+// Result: Storefront $25,980.29 / Merchandising $13,780.43 / Corporate $4,731.06
+
+let SharedByMonth = AzureBilling_CL
+    | where ResourceGroup == "rg-shared-services"
+    | summarize SharedCost = sum(CostInBillingCurrency) by BillingPeriod;
+let MonthTotals = AllocationDrivers_CL
+    | where Driver == "aks_vcpu_hours"
+    | summarize MonthTotal = sum(Value) by BillingPeriod;
+AllocationDrivers_CL
+| where Driver == "aks_vcpu_hours"
+| summarize DriverValue = sum(Value) by BillingPeriod, CostCenter
+| join kind=inner MonthTotals on BillingPeriod
+| extend Share = DriverValue / MonthTotal
+| join kind=inner SharedByMonth on BillingPeriod
+| extend Allocated = Share * SharedCost
+| summarize TotalAllocated = round(sum(Allocated), 2) by CostCenter
+| order by TotalAllocated desc
