@@ -1,0 +1,30 @@
+// Detector 3 of 4: orphaned resources — perfectly flat cost, nobody using them.
+// Signal is coefficient of variation (stdev/mean). Anything in use fluctuates;
+// an abandoned resource bills the identical amount every day forever.
+//
+// HONEST LIMITATION: 14 rows returned, 3 real. 21% precision, and it is not
+// fixable by tightening the statistics — an abandoned managed disk and a
+// healthy production VM are statistically identical. Both bill a fixed
+// amount daily. The signal for "orphaned" is not in the billing data at all;
+// it's in the resource graph (does a disk have a parent VM? is a public IP
+// attached to a NIC?). That would need Azure Resource Graph joined back to cost.
+//
+// This produces a candidate list for human review, not a delete list.
+// See 08b for a resource-type filter that reaches 100% precision by
+// hardcoding which types are suspicious — a heuristic standing in for
+// data we don't have.
+//
+// Finds: snapshot $305.49, managed disk $235.21, public IP $42.96
+// ($583.66/yr) — alongside 11 legitimately-flat production resources.
+
+AzureBilling_CL
+| extend D = todatetime(Date)
+| summarize DailyCost = sum(CostInBillingCurrency) by ResourceName, ResourceGroup, MeterCategory, D
+| summarize Days = count(), Total = sum(DailyCost), StdDev = stdev(DailyCost), Avg = avg(DailyCost)
+          by ResourceName, ResourceGroup, MeterCategory
+| where Days > 300
+| extend Variability = round(StdDev / Avg, 4)
+| where Variability < 0.05
+| project ResourceName, ResourceGroup, MeterCategory,
+          AnnualCost = round(Total, 2), DailyAvg = round(Avg, 4), Variability
+| order by AnnualCost desc
