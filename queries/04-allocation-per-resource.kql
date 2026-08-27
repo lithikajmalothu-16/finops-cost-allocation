@@ -1,0 +1,34 @@
+// Per-resource allocation: each shared resource gets the driver that
+// actually reflects who caused its cost.
+//   AKS cluster        -> vCPU-hours
+//   Log Analytics      -> ingestion GB
+//   Bandwidth + firewall "Data Processed" -> egress GB
+//   Everything else    -> headcount (fixed costs with no usage signal)
+//
+// The firewall is split across two drivers by meter: its data-processed
+// charge is usage-driven, its hourly deployment charge is not.
+//
+// vs. the naive version in 03: Corporate rises $4,731 -> $7,902 (+67%),
+// Storefront falls $25,980 -> $22,428. Same pool, same total, different
+// methodology — $3,552 moved between teams.
+// Result: Storefront $22,428.09 / Merchandising $14,161.49 / Corporate $7,902.20
+
+let SharedCosts = AzureBilling_CL
+    | where ResourceGroup == "rg-shared-services"
+    | extend DriverKey = case(
+        ResourceName == "aks-shared-platform", "aks_vcpu_hours",
+        ResourceName == "log-shared-workspace", "log_ingest_gb",
+        ResourceName == "bandwidth-egress-shared", "egress_gb",
+        ResourceName == "afw-shared-egress" and MeterName == "Data Processed", "egress_gb",
+        "headcount")
+    | summarize SharedCost = sum(CostInBillingCurrency) by BillingPeriod, DriverKey;
+let DriverTotals = AllocationDrivers_CL
+    | summarize MonthTotal = sum(Value) by BillingPeriod, Driver;
+AllocationDrivers_CL
+| summarize DriverValue = sum(Value) by BillingPeriod, Driver, CostCenter
+| join kind=inner DriverTotals on BillingPeriod, Driver
+| extend Share = DriverValue / MonthTotal
+| join kind=inner (SharedCosts) on $left.BillingPeriod == $right.BillingPeriod, $left.Driver == $right.DriverKey
+| extend Allocated = Share * SharedCost
+| summarize TotalAllocated = round(sum(Allocated), 2) by CostCenter
+| order by TotalAllocated desc
