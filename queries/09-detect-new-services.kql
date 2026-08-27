@@ -1,0 +1,22 @@
+// Detector 4 of 4: new service adoption.
+// Percentage change is undefined when the baseline is zero, so this detects
+// the transition instead — anything whose first billing day is more than
+// 30 days after the dataset begins. The buffer avoids flagging resources
+// that merely started a few days late.
+//
+// Finds: Azure OpenAI, first billed 2026-02-09, $379.43 to date.
+//
+// Why it matters despite the trivial amount: it compounds ~9%/month.
+// $29 -> $70 over six months, reaching ~$200/mo in a year and ~$580 in two.
+// A threshold alert set at any sensible dollar amount stays silent for
+// eighteen months, then fires once the decision is expensive to reverse.
+// The moment to notice a compounding line item is while it's still small.
+
+let DataStart = toscalar(AzureBilling_CL | summarize min(todatetime(Date)));
+AzureBilling_CL
+| extend D = todatetime(Date)
+| summarize FirstDay = min(D), LastDay = max(D), Total = sum(CostInBillingCurrency)
+          by ResourceName, MeterCategory
+| where FirstDay > DataStart + 30d
+| project FirstDay, ResourceName, MeterCategory, TotalSinceStart = round(Total, 2)
+| order by FirstDay asc
