@@ -1,0 +1,22 @@
+// Detector 3b: same statistics as 08, plus a resource-type filter.
+// Reaches 100% precision (3 rows, all real) — but only by hardcoding
+// that disks, public IPs and snapshots are suspicious while VMs and
+// gateways are not.
+//
+// That's a heuristic standing in for data we don't have, not detection.
+// Worth having both versions: 08 shows what the cost data alone can do,
+// 08b shows what domain knowledge buys you.
+//
+// Result: snapshot $305.49, managed disk $235.21, public IP $42.96
+
+AzureBilling_CL
+| extend D = todatetime(Date)
+| summarize DailyCost = sum(CostInBillingCurrency) by ResourceName, ResourceGroup, ConsumedService, MeterCategory, D
+| summarize Days = count(), Total = sum(DailyCost), StdDev = stdev(DailyCost), Avg = avg(DailyCost)
+          by ResourceName, ResourceGroup, ConsumedService, MeterCategory
+| where Days > 300
+| extend Variability = StdDev / Avg
+| where Variability < 0.05
+| where MeterCategory == "Storage" or ResourceName startswith "pip-" or ResourceName startswith "disk-"
+| project ResourceName, ResourceGroup, MeterCategory, AnnualCost = round(Total, 2)
+| order by AnnualCost desc
