@@ -1,0 +1,28 @@
+// Detector 2 of 4: slow creep — costs that never jump, just grow.
+// Fits a straight line through each resource's daily cost.
+//
+//   Slope    = daily drift in cost
+//   RSquared = how straight the line is. > 0.7 separates genuine trend
+//              from a resource that merely wandered upward.
+//
+// Zero overlap with the step-change detector — these problems are
+// structurally invisible to it. Storage with no lifecycle policy drifts
+// from ~$5.50 to ~$8.60/day over a year. Never spikes, never alerts,
+// compounds indefinitely.
+//
+// Finds: storage accounts with no lifecycle policy (x2), backup vault
+// with no retention pruning.
+
+AzureBilling_CL
+| extend D = todatetime(Date)
+| summarize DailyCost = sum(CostInBillingCurrency) by ResourceName, D
+| order by ResourceName asc, D asc
+| summarize Costs = make_list(DailyCost), Days = count(), Total = sum(DailyCost) by ResourceName
+| where Days > 200 and Total > 200
+| extend (Slope, Intercept, RSquared) = series_fit_line(Costs)
+| extend StartCost = Intercept, EndCost = Intercept + Slope * Days
+| extend GrowthPct = round(100.0 * (EndCost - StartCost) / StartCost, 1)
+| where Slope > 0 and RSquared > 0.7
+| project ResourceName, GrowthPct, RSquared = round(RSquared, 3),
+          DailyDrift = round(Slope, 4), AnnualTotal = round(Total, 2)
+| order by GrowthPct desc
